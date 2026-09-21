@@ -5,15 +5,14 @@ export default async function handler(req, res) {
 
   if (!token) {
     return res.status(500).json({
-      error: "MAILTM_TOKEN is not configured"
+      error: "MAILTM_TOKEN missing"
     });
   }
 
   try {
-    const messagesRes = await fetch(
+    const response = await fetch(
       "https://api.mail.tm/messages?page=1",
       {
-        method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/json"
@@ -21,41 +20,26 @@ export default async function handler(req, res) {
       }
     );
 
-    const data = await messagesRes.json();
+    const data = await response.json();
 
-    // Show the actual Mail.tm error
-    if (!messagesRes.ok) {
-      console.error("Mail.tm error:", messagesRes.status, data);
-
-      return res.status(messagesRes.status).json({
-        error: "Mail.tm API error",
-        status: messagesRes.status,
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: "Mail.tm error",
         details: data
       });
     }
 
     const messages = data["hydra:member"] || [];
 
-    // No emails
     if (messages.length === 0) {
       return res.status(200).json({
         empty: true
       });
     }
 
-    // Find Skinape email if it exists,
-    // otherwise use the newest email
-    const latest =
-      messages.find(
-        (m) =>
-          m.from &&
-          m.from.address &&
-          m.from.address.toLowerCase() ===
-            "no-reply@skinape.com"
-      ) || messages[0];
+    const latest = messages[0];
 
-    // Get full message
-    const msgRes = await fetch(
+    const messageResponse = await fetch(
       `https://api.mail.tm/messages/${latest.id}`,
       {
         headers: {
@@ -65,37 +49,50 @@ export default async function handler(req, res) {
       }
     );
 
-    const msg = await msgRes.json();
+    const message = await messageResponse.json();
 
-    if (!msgRes.ok) {
-      console.error("Mail.tm message error:", msgRes.status, msg);
-
-      return res.status(msgRes.status).json({
-        error: "Could not load message",
-        status: msgRes.status,
-        details: msg
+    if (!messageResponse.ok) {
+      return res.status(messageResponse.status).json({
+        error: "Message error",
+        details: message
       });
     }
 
+    console.log("MAIL.TM MESSAGE:");
+    console.log(JSON.stringify(message, null, 2));
+
     return res.status(200).json({
       empty: false,
-      id: msg.id,
-      subject: msg.subject || "(No subject)",
-      from: msg.from?.address || "Unknown",
-      date: msg.createdAt,
-      html: Array.isArray(msg.html)
-        ? msg.html[0]
-        : "",
-      text: msg.text || "",
-      intro: latest.intro || ""
+
+      id: message.id,
+
+      subject: message.subject || "(No subject)",
+
+      from: message.from?.address || "(Unknown sender)",
+
+      date:
+        message.createdAt ||
+        message.updatedAt ||
+        null,
+
+      html:
+        Array.isArray(message.html)
+          ? message.html[0]
+          : message.html || "",
+
+      text: message.text || "",
+
+      intro:
+        message.intro ||
+        message.text ||
+        ""
     });
 
   } catch (error) {
-    console.error("Server error:", error);
+    console.error(error);
 
     return res.status(500).json({
-      error: "Internal server error",
-      details: error.message
+      error: error.message
     });
   }
 }
