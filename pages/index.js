@@ -1,75 +1,55 @@
-import useSWR from 'swr';
+export default async function handler(req, res) {
+  const token = process.env.MAILTM_TOKEN;
 
-// Pune aici token-ul tău generat conform docs.mail.tm
-const TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3ODk5ODQyNDksInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoic2tpbmFwZUB1YmVyaXAuY29tIiwiaWQiOiI2YWIwZmRlYjQ0MjE0M2I5YjQwYmRhZjAiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNmFiMGZkZWI0NDIxNDNiOWI0MGJkYWYwIl19fQ.CQxtHzHRSqPgUvZWsv_KJod7JER0Uy80xLwBAPxvkgyC-iyaUAMc8VE2sY8aoD5_jilVS7vWOCdTmPH7SqxWxw"; 
-
-const fetcher = async (url) => {
-  const headers = {
-    Authorization: `Bearer ${TOKEN}`,
-    Accept: "application/json",
-  };
-
-  // 1. Preluăm lista de mesaje
-  const listRes = await fetch("https://api.mail.tm/messages?page=1", { headers });
-  
-  if (!listRes.ok) {
-    throw new Error(`Eroare Mail.tm: ${listRes.status}`);
-  }
-  
-  const listData = await listRes.json();
-  const messages = listData["hydra:member"] || [];
-
-  if (messages.length === 0) {
-    return { empty: true };
+  if (!token) {
+    return res.status(500).json({ error: "Token-ul MAILTM_TOKEN lipsește." });
   }
 
-  // 2. Preluăm detaliile ultimului mesaj
-  const latestId = messages[0].id;
-  const msgRes = await fetch(`https://api.mail.tm/messages/${latestId}`, { headers });
-  
-  if (!msgRes.ok) {
-    throw new Error("Nu s-a putut citi mesajul.");
+  try {
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json"
+    };
+
+    // 1. Preluăm lista de mesaje prin PROXY
+    const listUrl = encodeURIComponent("https://api.mail.tm/messages?page=1");
+    const response = await fetch(`https://corsproxy.io/?${listUrl}`, { headers });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: "Eroare la preluarea listei de emailuri." });
+    }
+
+    const data = await response.json();
+    const messages = data["hydra:member"] || [];
+
+    if (messages.length === 0) {
+      return res.status(200).json({ empty: true });
+    }
+
+    // 2. Preluăm ultimul mesaj prin PROXY
+    const latest = messages[0];
+    const messageUrl = encodeURIComponent(`https://api.mail.tm/messages/${latest.id}`);
+    const messageResponse = await fetch(`https://corsproxy.io/?${messageUrl}`, { headers });
+
+    if (!messageResponse.ok) {
+      return res.status(messageResponse.status).json({ error: "Eroare la citirea mesajului complet." });
+    }
+
+    const message = await messageResponse.json();
+
+    return res.status(200).json({
+      empty: false,
+      id: message.id,
+      subject: message.subject || "(Fără subiect)",
+      from: message.from?.address || "(Expeditor necunoscut)",
+      date: message.createdAt || message.updatedAt || null,
+      html: Array.isArray(message.html) ? message.html[0] : message.html || "",
+      text: message.text || "",
+      intro: message.intro || message.text || ""
+    });
+
+  } catch (error) {
+    console.error("Eroare API:", error);
+    return res.status(500).json({ error: error.message });
   }
-
-  const message = await msgRes.json();
-
-  return {
-    empty: false,
-    subject: message.subject || "(No subject)",
-    from: message.from?.address || "(Unknown sender)",
-    date: message.createdAt || message.updatedAt || null,
-    html: Array.isArray(message.html) ? message.html[0] : message.html || "",
-    text: message.text || "",
-    intro: message.intro || message.text || ""
-  };
-};
-
-export default function Home() {
-  const { data, error } = useSWR('mailtm-latest', fetcher, { refreshInterval: 5000 });
-
-  if (error) {
-    return (
-      <div style={{ color: 'red', padding: '2rem', fontFamily: 'sans-serif' }}>
-        <h3>Eroare:</h3>
-        <p>{error.message}</p>
-        <p style={{ fontSize: '0.9rem', color: '#555' }}>
-          Dacă vezi eroare de tip CORS sau Cloudflare, asigură-te că rulezi pe <code>localhost</code> și că token-ul este valid.
-        </p>
-      </div>
-    );
-  }
-
-  if (!data) return <p style={{ textAlign: 'center', marginTop: '2rem' }}>Se încarcă…</p>;
-  if (data.empty) return <p style={{ textAlign: 'center', marginTop: '2rem' }}>Niciun email primit încă.</p>;
-
-  return (
-    <main style={{ maxWidth: 700, margin: '2rem auto', fontFamily: 'sans-serif', padding: '0 1rem' }}>
-      <h1>{data.subject}</h1>
-      <p style={{ color: '#666' }}>
-        De la: <strong>{data.from}</strong> — {data.date ? new Date(data.date).toLocaleString() : ''}
-      </p>
-      <hr />
-      <div dangerouslySetInnerHTML={{ __html: data.html || `<p>${data.intro}</p>` }} />
-    </main>
-  );
 }
