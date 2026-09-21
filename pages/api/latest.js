@@ -1,28 +1,101 @@
 // pages/api/latest.js
+
 export default async function handler(req, res) {
-  const token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpYXQiOjE3ODk5ODQyNDksInJvbGVzIjpbIlJPTEVfVVNFUiJdLCJhZGRyZXNzIjoic2tpbmFwZUB1YmVyaXAuY29tIiwiaWQiOiI2YWIwZmRlYjQ0MjE0M2I5YjQwYmRhZjAiLCJtZXJjdXJlIjp7InN1YnNjcmliZSI6WyIvYWNjb3VudHMvNmFiMGZkZWI0NDIxNDNiOWI0MGJkYWYwIl19fQ.CQxtHzHRSqPgUvZWsv_KJod7JER0Uy80xLwBAPxvkgyC-iyaUAMc8VE2sY8aoD5_jilVS7vWOCdTmPH7SqxWxw"; // your full token here
+  const token = process.env.MAILTM_TOKEN;
 
-  const messagesRes = await fetch("https://api.mail.tm/messages?page=1&limit=5", {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const data = await messagesRes.json();
-  const messages = data["hydra:member"];
+  if (!token) {
+    return res.status(500).json({
+      error: "MAILTM_TOKEN is not configured"
+    });
+  }
 
-  // Optionally filter by sender:
-  const latest = messages.find(m => m.from.address === "no-reply@skinape.com") || messages[0];
+  try {
+    const messagesRes = await fetch(
+      "https://api.mail.tm/messages?page=1",
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      }
+    );
 
-  if (!latest) return res.status(200).json({ empty: true });
+    const data = await messagesRes.json();
 
-  const msgRes = await fetch(`https://api.mail.tm/messages/${latest.id}`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const msg = await msgRes.json();
+    // Show the actual Mail.tm error
+    if (!messagesRes.ok) {
+      console.error("Mail.tm error:", messagesRes.status, data);
 
-  res.status(200).json({
-    subject: msg.subject,
-    from: msg.from.address,
-    date: msg.createdAt,
-    html: msg.html[0],
-    intro: msg.intro
-  });
+      return res.status(messagesRes.status).json({
+        error: "Mail.tm API error",
+        status: messagesRes.status,
+        details: data
+      });
+    }
+
+    const messages = data["hydra:member"] || [];
+
+    // No emails
+    if (messages.length === 0) {
+      return res.status(200).json({
+        empty: true
+      });
+    }
+
+    // Find Skinape email if it exists,
+    // otherwise use the newest email
+    const latest =
+      messages.find(
+        (m) =>
+          m.from &&
+          m.from.address &&
+          m.from.address.toLowerCase() ===
+            "no-reply@skinape.com"
+      ) || messages[0];
+
+    // Get full message
+    const msgRes = await fetch(
+      `https://api.mail.tm/messages/${latest.id}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const msg = await msgRes.json();
+
+    if (!msgRes.ok) {
+      console.error("Mail.tm message error:", msgRes.status, msg);
+
+      return res.status(msgRes.status).json({
+        error: "Could not load message",
+        status: msgRes.status,
+        details: msg
+      });
+    }
+
+    return res.status(200).json({
+      empty: false,
+      id: msg.id,
+      subject: msg.subject || "(No subject)",
+      from: msg.from?.address || "Unknown",
+      date: msg.createdAt,
+      html: Array.isArray(msg.html)
+        ? msg.html[0]
+        : "",
+      text: msg.text || "",
+      intro: latest.intro || ""
+    });
+
+  } catch (error) {
+    console.error("Server error:", error);
+
+    return res.status(500).json({
+      error: "Internal server error",
+      details: error.message
+    });
+  }
 }
